@@ -102,17 +102,20 @@ async def download_photos(photos_path: Path, photos: list):
         numeral.get_plural(download_time, "секунду, секунды, секунд")
     ))
 
-async def download_video(video_path, video_link):
+async def download_video(video_path:Path, video_link):
     ydl_opts = {'outtmpl': '{}'.format(video_path), 'quiet': True, 'retries': 10, 'ignoreerrors': True, 'age_limit': 28}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download(video_link)
-        logger.info("Видео загружено: %s" % video_link)
+        logger.info("Видео загружено: %s" % video_path.name)
 
 async def download_videos(videos_path: Path, videos: list):
     futures = []
     for i, video in enumerate(videos, start=1):
         filename = "{}_{}_{}.mp4".format(video["date"], video["owner_id"], video["id"])
         video_path = videos_path.joinpath(filename)
+        if video_path.exists():
+            logger.info(f"Пропущено (уже существует): {video_path.name}")
+            continue
         futures.append(download_video(video_path, video["player"]))
     logger.info("We will download %s wideos" % len(futures))
     for future in tqdm(asyncio.as_completed(futures), total=len(futures)):
@@ -132,7 +135,7 @@ class Vkd:
         self.utils = Utils(self.vk)
         logger.info("Vkd init — utils создан")
         self.vk_ids = self.utils.vk_resolve_ids(vk_ids)
-        logger.info(f"Vkd init — ids разрешены:{self.vk_ids} \n с типом {self.utils.ids_type}")
+        logger.info(f"Vkd init — ids разрешены:{self.vk_ids} с типом {self.utils.ids_type}")
         self.groups = Groups(self.vk)
         logger.info("Vkd init — groups создан")
         self.wall = Wall(self.vk, self.groups)
@@ -145,7 +148,8 @@ class Vkd:
         logger.info("Vkd init — Messages создан")
         #self.dir_name: Path = ''
 
-    async def main(self, type):
+    async def main(self):
+        type = app.utils.ids_type
         if type == 'group' and self.utils.check_group_ids(self.vk_ids):
             for group in self.vk_ids:
                 # получаем посты со стены (сохраняются в groups.photos)
@@ -595,8 +599,9 @@ class Messages:
 
 if __name__ == '__main__':
     try:
-        app = Vkd('https://vk.com/seeu_off')
-        logger.info("Приложение иницилизировано")
-        asyncio.run(app.main(app.utils.ids_type))
+        app = Vkd('https://vk.com/sweet_diabetes')
+        logger.info("Приложение инициализировано")
+        #asyncio.run(app.main(app.utils.ids_type))
+        asyncio.run(app.main())
     except Exception as e:
         logger.error(f"ОШИБКА: {e}")
