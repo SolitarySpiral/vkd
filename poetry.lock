@@ -295,6 +295,28 @@ files = [
 ]
 
 [[package]]
+name = "ffmpeg"
+version = "1.4"
+description = "ffmpeg python package url [https://github.com/jiashaokun/ffmpeg]"
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "ffmpeg-1.4.tar.gz", hash = "sha256:6931692c890ff21d39938433c2189747815dca0c60ddc7f9bb97f199dba0b5b9"},
+]
+
+[[package]]
+name = "ffprobe"
+version = "0.5"
+description = "Wrapper around ffprobe command to extract metadata from media files"
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "ffprobe-0.5.zip", hash = "sha256:f7dc048df62c6ccc1c602c865a7f0976b2679200fd07ebdc34ce51e9a8205b76"},
+]
+
+[[package]]
 name = "frozenlist"
 version = "1.6.0"
 description = "A list-like structure which implements collections.abc.MutableSequence"
@@ -944,4 +966,4 @@ test = ["pytest (>=8.1,<9.0)", "pytest-rerunfailures (>=14.0,<15.0)"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13"
-content-hash = "96aaaed74feca11d39e52ff5e41fb27cef8e27ab15a4f91d75c107f42ecb9b7f"
+content-hash = "08bb9608b4e302f70717b2d0fc8ab8cfd2bd2cefdd6757756acb47b4fb5ffe46"

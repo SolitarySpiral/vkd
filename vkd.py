@@ -1,20 +1,21 @@
-import os
 import re
+import sys
 import math
 import time
 import yaml
 import vk_api
 import yt_dlp
+import logging
 import asyncio
 import aiohttp
+import argparse
 import aiofiles
-from tqdm.asyncio import tqdm
-from pytils import numeral
-from datetime import datetime
 from pathlib import Path
+from pytils import numeral
+from tqdm.asyncio import tqdm
+from datetime import datetime
 
-import logging
-import sys
+from filter import check_for_duplicates
 
 logging.basicConfig(
     level=logging.INFO,
@@ -148,72 +149,121 @@ class Vkd:
         logger.info("Vkd init — Messages создан")
         #self.dir_name: Path = ''
 
-    async def main(self):
+    async def main(self, d_photos = None, d_videos = None, d_wall = None, d_chat = None):
+        """
+        Основной модуль, принимающий CLI аргументы. Определяет тип аргумента target_id. Скачивает фото/видео в зависимости от параметров
+        d_photos, d_videos, d_wall, d_chat
+        """
         type = app.utils.ids_type
-        if type == 'group' and self.utils.check_group_ids(self.vk_ids):
-            for group in self.vk_ids:
-                # получаем посты со стены (сохраняются в groups.photos)
-                logger.info(f"Пытаемся получить фото стены")
-                self.wall.vk_get_posts(group_id=group)
-                logger.info(f"Пытаемся получить фото стены: получили {len(self.groups.photos)}")
-                logger.info(f"Пытаемся получить все альбомы группы: {group}")
-                items = self.photos.vk_getALL(group, 'group')
-                logger.info(f"Пытаемся получить все альбомы группы: собрали фотографий {len(items)}")
-                self.utils.extract_from_raw_data(type='photos', raw_data=items, owner_id=group)
-                logger.info(f"Пытаемся получить все видео группы: {group}")
-                items = self.video.vk_group_get(group)
-                logger.info(f"Пытаемся получить все видео группы: собрали {len(items)}")
-                self.utils.extract_from_raw_data(type='videos', raw_data=items, owner_id=group)
-                # объединение фотографий из альбомов и фото из постов со стены
-                logger.info(f"будем объединять фото со стены {len(self.groups.photos)} и из альбомов {len(self.utils.photos)}")
-                self.utils.photos.extend(self.groups.photos)
+        # проверки несовместимых комбинаций параметров
+        if type =='user' and d_chat:
+            parser.print_help()
+            sys.exit("Ссылка распознана как пользователь, но выбран аргумент --chat")
+        
+        if type =='group' and d_chat:
+            parser.print_help()
+            sys.exit("Ссылка распознана как группа, но выбран аргумент --chat")
 
-                group_name = self.utils.get_group_title(group)
-                group_dir = BASE_DIR.joinpath(group_name)
-                self.utils.create_dir(group_dir)
-                await download_photos(group_dir, self.utils.photos)
-                await download_videos(group_dir, self.utils.videos)
+        if type =='chat' and d_wall:
+            parser.print_help()
+            sys.exit("Ссылка распознана как чат, но выбран аргумент --wall")
 
-        if type == 'user' and self.utils.check_user_ids(self.vk_ids):
-            for user in self.vk_ids:
-                items = self.photos.vk_user_get(user, 'saved')
-                logger.info(f"Пытаемся получить фото: saved получили {len(items)}")
-                self.utils.extract_from_raw_data(type='photos', raw_data=items, owner_id=user)
+        if type =='chat' and not d_photos and not d_videos:
+            parser.print_help()
+            sys.exit("Для ссылки чата не указан ни один из аргументов --photos --videos")
 
-                items = self.photos.vk_user_get(user, 'profile')
-                logger.info(f"Пытаемся получить фото: profile получили {len(items)}")
-                self.utils.extract_from_raw_data(type='photos', raw_data=items, owner_id=user)
+        # основная логика
+        if type == 'group': 
+            if self.utils.check_group_ids(self.vk_ids):
+                for group in self.vk_ids:
+                    if d_wall:
+                        # получаем посты со стены (сохраняются в groups.photos)
+                        logger.info(f"Пытаемся получить фото стены")
+                        self.wall.vk_get_posts(group_id=group)
+                        logger.info(f"Пытаемся получить фото стены: получили {len(self.groups.photos)}")
+                    if d_photos:
+                        logger.info(f"Пытаемся получить все альбомы группы: {group}")
+                        items = self.photos.vk_getALL(group, 'group')
+                        logger.info(f"Пытаемся получить все альбомы группы: собрали фотографий {len(items)}")
+                        self.utils.extract_from_raw_data(type='photos', raw_data=items, owner_id=group)
+                    if d_videos:
+                        logger.info(f"Пытаемся получить все видео группы: {group}")
+                        items = self.video.vk_video_get(group)
+                        logger.info(f"Пытаемся получить все видео группы: собрали {len(items)}")
+                        self.utils.extract_from_raw_data(type='videos', raw_data=items, owner_id=group)
 
-                items = self.photos.vk_user_get(user, 'wall')
-                logger.info(f"Пытаемся получить фото: wall получили {len(items)}")
-                self.utils.extract_from_raw_data(type='photos', raw_data=items, owner_id=user)
+                    group_name = self.utils.get_group_title(group)
+                    d_dir = BASE_DIR.joinpath(group_name)
+                    self.utils.create_dir(d_dir)
+                    if d_photos or d_wall:
+                        # объединение фотографий из альбомов и фото из постов со стены
+                        logger.info(f"будем объединять фото со стены {len(self.groups.photos)} и из альбомов {len(self.utils.photos)}")
+                        self.utils.photos.extend(self.groups.photos)
+                        await download_photos(d_dir, self.utils.photos)
+                    if d_videos:
+                        await download_videos(d_dir, self.utils.videos)
 
-                items = self.photos.vk_getALL(user, 'user')
-                logger.info(f"Пытаемся получить фото: getall получили {len(items)}")
-                self.utils.extract_from_raw_data(type='photos', raw_data=items, owner_id=user)
+        if type == 'user':
+            if self.utils.check_user_ids(self.vk_ids):
+                for user in self.vk_ids:
+                    if d_photos:
+                        items = self.photos.vk_user_get(user, 'saved')
+                        logger.info(f"Пытаемся получить фото: saved получили {len(items)}")
+                        self.utils.extract_from_raw_data(type='photos', raw_data=items, owner_id=user)
 
-                username = self.utils.get_username(user)
-                photos_path = BASE_DIR.joinpath(username)
-                self.utils.create_dir(photos_path)
-                await download_photos(photos_path, self.utils.photos)
+                        items = self.photos.vk_user_get(user, 'profile')
+                        logger.info(f"Пытаемся получить фото: profile получили {len(items)}")
+                        self.utils.extract_from_raw_data(type='photos', raw_data=items, owner_id=user)
+
+                        items = self.photos.vk_user_get(user, 'wall')
+                        logger.info(f"Пытаемся получить фото: wall получили {len(items)}")
+                        self.utils.extract_from_raw_data(type='photos', raw_data=items, owner_id=user)
+
+                        items = self.photos.vk_getALL(user, 'user')
+                        logger.info(f"Пытаемся получить фото: getall получили {len(items)}")
+                        self.utils.extract_from_raw_data(type='photos', raw_data=items, owner_id=user)
+
+                    if d_videos:
+                        logger.info(f"Пытаемся получить все видео пользователя: {user}")
+                        items = self.video.vk_video_get(user)
+                        logger.info(f"Пытаемся получить все видео пользователя: собрали {len(items)}")
+                        self.utils.extract_from_raw_data(type='videos', raw_data=items, owner_id=user)
+
+                    if d_wall:
+                        logger.info(f"Пытаемся получить фото стены")
+                        items = self.wall.vk_get_posts(user)
+                        logger.info(f"Пытаемся получить фото стены: получили {len(self.groups.photos)}")
+
+                    username = self.utils.get_username(user)
+                    d_dir = BASE_DIR.joinpath(username)
+                    self.utils.create_dir(d_dir)
+                    if d_photos or d_wall:
+                        # объединение фотографий из альбомов и фото из постов со стены
+                        logger.info(f"будем объединять фото со стены {len(self.groups.photos)} и из альбомов {len(self.utils.photos)}")
+                        self.utils.photos.extend(self.groups.photos)
+                        await download_photos(d_dir, self.utils.photos)
+                    if d_videos:
+                        await download_videos(d_dir, self.utils.videos)
 
         if type == 'chat':
             for chat in self.vk_ids:
                 if self.utils.check_chat_id(chat) and chat>0:
                     logger.info("Ветка чат с пользователем")
-                    items = self.messages.vk_getHistoryAttachments(chat)
+                    if d_photos and d_videos:
+                        items = self.messages.vk_getHistoryAttachments(chat, "photo")
+                        items.extend(self.messages.vk_getHistoryAttachments(chat, "video"))
+                    elif d_photos:
+                        items = self.messages.vk_getHistoryAttachments(chat, "photo")
+                    elif d_videos:
+                        items = self.messages.vk_getHistoryAttachments(chat, "video")
                     logger.info(f"Пытаемся получить фото из переписки: получили {len(items)}")
                     self.utils.extract_from_raw_data(type='chat', raw_data=items, owner_id=chat)
                     logger.info(f'Обработаны items {len(items)}, в photos лежит {len(self.utils.photos)}')
                     logger.info(f"Получаем название чата по id {chat}")
                     username = self.utils.get_username(chat)
                     logger.info("Получили название переписки username")
-                    photos_path = BASE_DIR.joinpath(f"Переписка {username}")
-                    self.utils.create_dir(photos_path)
-                    await download_photos(photos_path, self.utils.photos)
                 elif self.utils.check_chat_id(chat) and chat<0:
                     logger.info("Ветка чат с группой")
-                    #chat = 2_000_000_000+chat
                     items = self.messages.vk_getHistoryAttachments(chat)
                     logger.info(f"Пытаемся получить фото из переписки: получили {len(items)}")
                     self.utils.extract_from_raw_data(type='chat', raw_data=items, owner_id=chat)
@@ -221,12 +271,24 @@ class Vkd:
                     logger.info(f"Получаем название чата по id {chat}")
                     username = self.utils.get_chat_title(chat)
                     logger.info("Получили название переписки username")
-                    photos_path = BASE_DIR.joinpath(f"Переписка {username}")
-                    self.utils.create_dir(photos_path)
-                    await download_photos(photos_path, self.utils.photos)
                 else:
                     logger.error(f"Не смогли определить чат {chat}")
 
+                d_dir = BASE_DIR.joinpath(f"Переписка {username}")
+                self.utils.create_dir(d_dir)
+                if d_photos:
+                    # объединение фотографий из альбомов и фото из постов со стены
+                    logger.info(f"будем объединять фото со стены {len(self.groups.photos)} и из альбомов {len(self.utils.photos)}")
+                    self.utils.photos.extend(self.groups.photos)
+                    await download_photos(d_dir, self.utils.photos)
+                if d_videos:
+                    await download_videos(d_dir, self.utils.videos)
+
+        logger.info("Проверка на дубликаты")
+        dublicates_count = check_for_duplicates(d_dir)
+        logger.info(f"Дубликатов удалено: {dublicates_count}")
+
+        logger.info(f"Итого скачено: {len(self.utils.photos + self.utils.videos) - dublicates_count} фото")
 
 class Vksesion:
     def __init__(self, token):
@@ -323,20 +385,33 @@ class Utils:
                         "date": datetime.fromtimestamp(int(video.get("date"))).strftime('%Y-%m-%d %H-%M-%S')
                     })
         elif type == 'chat':
-            logger.info(f"Пробуем достать фото из items c типом {type}")
-            for photo in raw_data:
-                attachment = photo.get("attachment", {})
-                #logger.info(attachment)
-                photo_data = attachment.get("photo", {})
-                #logger.info(photo_data)
-                sizes = photo_data.get("sizes", [])
-                logger.debug(f'"id": {photo_data.get("id")},\n"owner_id": {photo_data.get("owner_id")},\n"url": {sizes[-1].get("url") if sizes and isinstance(sizes[-1], dict) else None},\n"date": {datetime.fromtimestamp(int(photo_data.get("date", 0))).strftime('%Y-%m-%d %H-%M-%S')}')
-                self.photos.append({
-                    "id": photo_data.get("id"),
-                    "owner_id": photo_data.get("owner_id"),
-                    "url": sizes[-1].get("url") if sizes and isinstance(sizes[-1], dict) else None,
-                    "date": datetime.fromtimestamp(int(photo_data.get("date", 0))).strftime('%Y-%m-%d %H-%M-%S')
-                })
+            logger.info(f"Пробуем достать данные из items c типом {type}")
+            for item in raw_data:
+                attachment = item.get("attachment", {})
+                if attachment.get("photo", {}):
+                    photo_data = attachment.get("photo", {})
+                    #logger.info(photo_data)
+                    sizes = photo_data.get("sizes", [])
+                    logger.debug(f'"id": {photo_data.get("id")},\n"owner_id": {photo_data.get("owner_id")},\n"url": {sizes[-1].get("url") if sizes and isinstance(sizes[-1], dict) else None},\n"date": {datetime.fromtimestamp(int(photo_data.get("date", 0))).strftime('%Y-%m-%d %H-%M-%S')}')
+                    self.photos.append({
+                        "id": photo_data.get("id"),
+                        "owner_id": photo_data.get("owner_id"),
+                        "url": sizes[-1].get("url") if sizes and isinstance(sizes[-1], dict) else None,
+                        "date": datetime.fromtimestamp(int(photo_data.get("date", 0))).strftime('%Y-%m-%d %H-%M-%S')
+                    })
+                if attachment.get("video", {}):
+                    video = attachment.get("video", {})
+                    if "player" in video:
+                        self.videos.append({
+                            "type": attachment.get("type"),
+                            "id": video.get("id"),
+                            "owner_id": video.get("owner_id"),
+                            "title": video.get("title"),
+                            "player": video.get("player"),
+                            "date": datetime.fromtimestamp(int(video.get("date"))).strftime('%Y-%m-%d %H-%M-%S')
+                        })
+
+
 
     def check_user_id(self, id: str) -> bool:
         try:
@@ -541,12 +616,12 @@ class Video:
     def __init__(self, vk):
         self.vk = vk
 
-    def vk_group_get(self, group_id) -> dict:
+    def vk_video_get(self, owner_id) -> dict:
         offset = 0
         all_videos = []
         while True:
             temp = self.vk.video.get(
-                owner_id=group_id,
+                owner_id=owner_id,
                 count=100,
                 offset=offset
             )["items"]
@@ -562,46 +637,84 @@ class Messages:
     def __init__(self, vk):
         self.vk = vk
 
-    def vk_getHistoryAttachments(self, chat_id):
+    def vk_getHistoryAttachments(self, chat_id, types):
         items = []
         response = self.vk.messages.getHistoryAttachments(
             peer_id = chat_id,
             count=100,
-            media_type="photo"
+            media_type=types
         )
+        print(response["items"])
         items.extend(response["items"])
         while "next_from" in response:
             start_from = response.get("next_from")
-            logger.info(f"меняем start_from на {start_from}")
+            logger.info(f"Меняем start_from на {start_from}")
             response = self.vk.messages.getHistoryAttachments(
                 peer_id = chat_id,
                 count=100,
-                media_type="photo",
+                media_type=types,
                 start_from = start_from
             )
             items.extend(response["items"])
         logger.info(f"Получили всего {len(items)}")
-        # while True:
-        #     #logger.info(f"Получаем вложения беседы с параметрами(peer_id={chat_id},сount=100, offset={offset}, media_type=\"photo\")")
-        #     temp = self.vk.messages.getHistoryAttachments(
-        #         peer_id=chat_id,
-        #         count=100,
-        #         offset=offset,
-        #         media_type="photo"
-        #     )["items"]
-        #     logger.info(f"Получили вложений {len(temp)}")
-        #     items.extend(temp)
 
-        #     if len(temp) < 100:
-        #         break
-        #     offset += 100
         return items
 
 if __name__ == '__main__':
     try:
-        app = Vkd('https://vk.com/sweet_diabetes')
+        parser = argparse.ArgumentParser(
+        description="VK Downloader: Утилита для скачивания фото и видео из ВКонтакте.",
+        epilog="Пример: python vkd.py https://vk.com/octamillia --photos --output D:/Downloads/Durov"
+        )
+
+        # 1. Позиционный аргумент (обязательный)
+        parser.add_argument("vk_ids",
+                            type=str,
+                            help="Полный URL страницы/чата (например, 'durov', 'club1', 'https://vk.com/im/convo/123' или '123456').")
+        
+        # 2. Опциональный аргумент для указания директории сохранения
+        parser.add_argument("-o", "--output-dir",
+                            type=str,
+                            help="Путь к директории для сохранения файлов. Если не указан, будет использован путь по умолчанию (например, из config.yaml или ./VK_Downloads/<имя_цели>).",
+                            default=None) # Вы можете установить здесь путь по умолчанию, например, 'VK_Downloads'
+
+        # 3. Флаги (boolean arguments) для указания типа контента
+        parser.add_argument("--photos",
+                            action="store_true", # Значение будет True, если флаг указан, иначе False
+                            help="Скачивать фотографии (альбомы, сохраненные и т.д., в зависимости от типа target_id).")
+
+        parser.add_argument("--videos",
+                            action="store_true",
+                            help="Скачивать видеозаписи (в зависимости от типа target_id).")
+
+        parser.add_argument("--chat",
+                            action="store_true",
+                            help="Скачивать фотографии из указанного чата/переписки (если target_id это ID чата или ссылка на беседу).")
+        
+        parser.add_argument("--wall",
+                            action="store_true",
+                            help="Скачивать со стены (если target_id это ID пользователя или ID группы).")
+
+        # Парсинг аргументов
+        args = parser.parse_args()
+
+        if not args.photos and not args.videos and not args.chat and not args.wall:
+            parser.print_help()
+            sys.exit("Не выбран тип контента для скачивания.")
+
+        if args.chat and args.wall:
+            parser.print_help()
+            sys.exit("Нельзя скачать стену для чата.")
+
+        app = Vkd(args.vk_ids)
         logger.info("Приложение инициализировано")
-        #asyncio.run(app.main(app.utils.ids_type))
-        asyncio.run(app.main())
+        asyncio.run(app.main(
+            d_photos=args.photos,
+            d_videos=args.videos,
+            d_wall=args.wall,
+            d_chat=args.chat,
+            #output_directory=args.output_dir # если ваш main это принимает
+        ))
+        #asyncio.run(app.main())
     except Exception as e:
         logger.error(f"ОШИБКА: {e}")
