@@ -775,14 +775,13 @@ if __name__ == '__main__':
             parser.print_help()
             sys.exit("Нельзя скачать стену для чата.")
 
-        app = Vkd(args.vk_ids)
+        app = Vkd(args.vk_ids, args)
         logger.info("Приложение инициализировано")
         asyncio.run(app.main(
             d_photos=args.photos,
             d_videos=args.videos,
             d_wall=args.wall,
-            d_chat=args.chat,
-            args_from_cli = args
+            d_chat=args.chat,         
         ))
     except Exception as e:
         logger.error(f"ОШИБКА: {e}")
