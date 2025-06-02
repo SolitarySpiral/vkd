@@ -1,4 +1,5 @@
 config.yaml
+proxy.json
 __pycache__
 test.py
 token_fetcher.py

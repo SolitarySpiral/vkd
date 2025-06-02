@@ -3,8 +3,10 @@ import sys
 import math
 import time
 import yaml
+import json
+import random
 import vk_api
-import yt_dlp
+import yt_dlp, yt_dlp_proxy
 import logging
 import asyncio
 import aiohttp
@@ -16,6 +18,7 @@ from tqdm.asyncio import tqdm
 from datetime import datetime
 
 from filter import check_for_duplicates
+from proxy import construct_proxy_string
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,6 +29,7 @@ logger = logging.getLogger("vkd")
 
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR.joinpath("config.yaml")
+PROXY_PATH = APP_DIR.joinpath("proxy.json")
 
 
 def load_config() -> dict:
@@ -70,8 +74,8 @@ class Vkd:
         logger.debug("Vkd init — Video создан")
         self.messages = Messages(self.vk)
         logger.debug("Vkd init — Messages создан")
-
-        self.utils = Utils(self.vk, self.photos, args_from_cli)
+        self.cli_args = args_from_cli
+        self.utils = Utils(self.vk, self.photos, self.cli_args)
         logger.debug("Vkd init — utils создан")
         self.vk_ids, self.ids_type = self.utils.vk_resolve_ids(vk_ids)
         logger.info(f"Vkd init — ids разрешены:{self.vk_ids} с типом {self.ids_type}")
@@ -86,6 +90,8 @@ class Vkd:
         type = self.ids_type
         all_photos = []
         all_videos = []
+        d_dir = None # на случай, если провалили всё внутри main и хотим запустить check_for_duplicates. Она вернет 0
+        
         # проверки несовместимых комбинаций параметров
         if type =='user' and d_chat:
             sys.exit("Ссылка распознана как пользователь, но выбран аргумент --chat")
@@ -111,7 +117,7 @@ class Vkd:
                         # получаем посты со стены (сохраняются в groups.photos)
                         logger.info(f"Пытаемся получить фото стены")
                         all_photos.extend(self.wall.vk_get_posts(group_id=group))
-                        logger.info(f"Пытаемся получить фото стены: получили {len(self.groups.photos)}")
+                        logger.info(f"Пытаемся получить фото стены: получили {len(all_photos)}")
                     if d_photos:
                         logger.info(f"Пытаемся получить все альбомы группы: {group}")
                         items = self.photos.vk_getALL(group)
@@ -126,13 +132,6 @@ class Vkd:
                     group_name = self.utils.get_group_title(group)
                     d_dir = BASE_DIR.joinpath(group_name)
                     self.utils.create_dir(d_dir)
-                    if d_photos or d_wall:
-                        # объединение фотографий из альбомов и фото из постов со стены
-                        logger.info(f"будем объединять фото со стены {len(self.groups.photos)} и из альбомов {len(all_photos)}")
-                        all_photos.extend(self.groups.photos)
-                        await download_photos(self.utils, d_dir, all_photos)
-                    if d_videos:
-                        await download_videos(d_dir, all_videos)
 
         if type == 'user':
             if self.utils.check_user_ids(self.vk_ids):
@@ -171,10 +170,6 @@ class Vkd:
                     username = self.utils.get_username(user)
                     d_dir = BASE_DIR.joinpath(username)
                     self.utils.create_dir(d_dir)
-                    if d_photos or d_wall:
-                        await download_photos(self.utils, d_dir, all_photos)
-                    if d_videos:
-                        await download_videos(d_dir, all_videos)
 
         if type == 'chat':
             for chat in self.vk_ids:
@@ -205,17 +200,17 @@ class Vkd:
 
                 d_dir = BASE_DIR.joinpath(f"Переписка {safe_filename(chat_title_or_name)}")
                 self.utils.create_dir(d_dir)
-                if d_photos:
-                    # объединение фотографий из альбомов и фото из постов со стены
-                    logger.info(f"будем объединять фото со стены {len(self.groups.photos)} и из альбомов {len(all_photos)}")
-                    all_photos.extend(self.groups.photos)
-                    await download_photos(self.utils, d_dir, all_photos)
-                if d_videos:
-                    await download_videos(d_dir, all_videos)
-
-        logger.info("Проверка на дубликаты")
-        dublicates_count = check_for_duplicates(d_dir)
-        logger.info(f"Дубликатов удалено: {dublicates_count}")
+                
+        if d_photos or d_wall:
+            await download_photos(self.utils, d_dir, all_photos)
+        if d_videos:
+            await download_videos(d_dir, all_videos, self.cli_args)
+        if 'd_dir' in locals() and d_dir.exists(): # Проверяем, была ли d_dir создана и существует
+            logger.info("Проверка на дубликаты")
+            dublicates_count = check_for_duplicates(d_dir)
+            logger.info(f"Дубликатов удалено: {dublicates_count}")
+        else:
+            dublicates_count = 0 # Если директория не была создана/указана
 
         logger.info(f"Итого скачено: {len(all_photos + all_videos) - dublicates_count} медиафайлов")
 
@@ -230,7 +225,6 @@ class Groups:
     'Вспомогательный класс Groups используется в связке Wall для получения фото постов стены'
     def __init__(self, vk):
         self.vk = vk
-        self.photos = []
 
     def get_single_post(self, post: dict):
         """Проходимся по всем вложениям поста и отбираем только картинки"""
@@ -690,21 +684,51 @@ async def download_photos(utils_instance:Utils, photos_path: Path, photos: list)
         numeral.get_plural(download_time, "секунду, секунды, секунд")
     ))
 
-async def download_video(video_path:Path, video_link):
-    ydl_opts = {'outtmpl': '{}'.format(video_path), 'quiet': True, 'retries': 10, 'ignoreerrors': True, 'age_limit': 28}
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download(video_link)
-        logger.info("Видео загружено: %s" % video_path.name)
+async def download_video(video_path:Path, video_link, proxy_url=None):
 
-async def download_videos(videos_path: Path, videos: list):
+    ydl_opts = {
+        'outtmpl': '{}-%(title)s.%(ext)s'.format(video_path), 
+        'quiet': True, 
+        #'verbose': True,
+        'retries': 3, 
+        'ignoreerrors': True, 
+        'age_limit': 28,
+    }
+    if proxy_url:
+        ydl_opts['proxy'] = proxy_url # Добавляем прокси если он указан
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download(video_link)
+            logger.info("Видео загружено: %s" % video_path.name)
+    except yt_dlp.utils.DownloadError as e:
+        logger.error(f"Ошибка загрузки yt-dlp для {video_link} в {video_path}: {e}")
+    except Exception as e:
+        logger.error(f"Неожиданная ошибка при загрузке видео {video_link} в {video_path}: {e}")
+
+
+async def download_videos(videos_path: Path, videos: list, cli_args):
+    proxy_str = None
+    if cli_args.use_proxy:
+        #пробуем получить прокси для yt-dlp
+        try:
+            if not PROXY_PATH.exists():
+                yt_dlp_proxy.update_proxies()
+            with open("proxy.json", "r") as f:
+                proxy = random.choice(json.load(f))
+                proxy_str = construct_proxy_string(proxy)
+                logger.info(f"Using proxy from {proxy['city']}, {proxy['country']}")
+        except Exception as e:
+            logger.error("Ошибка при получении прокси", e)
+
     futures = []
     for i, video in enumerate(videos, start=1):
-        filename = "{}_{}_{}.mp4".format(video["date"], video["owner_id"], video["id"])
-        video_path = videos_path.joinpath(filename)
+        filename = "{}_{}_{}".format(video["date"], video["owner_id"], video["id"])
+        video_path = videos_path.joinpath(filename).resolve()
         if video_path.exists():
             logger.info(f"Пропущено (уже существует): {video_path.name}")
             continue
-        futures.append(download_video(video_path, video["player"]))
+        futures.append(download_video(video_path, video["player"], proxy_str))
     logger.info("Мы попробуем скачать %s видео" % len(futures))
     for future in tqdm(asyncio.as_completed(futures), total=len(futures)):
         try:
@@ -747,6 +771,10 @@ if __name__ == '__main__':
         parser.add_argument("--wall",
                             action="store_true",
                             help="Скачивать со стены (если vk_ids это ID пользователя или ID группы).")
+        
+        parser.add_argument("--use-proxy",
+                            action="store_true",
+                            help="Использовать прокси для скачивания видео")
 
         # Парсинг аргументов
         args = parser.parse_args()
