@@ -687,13 +687,13 @@ async def download_photos(utils_instance:Utils, photos_path: Path, photos: list)
 async def download_video(video_path:Path, video_link, proxy_url=None):
 
     ydl_opts = {
-        'outtmpl': '{}'.format(video_path), 
+        'outtmpl': '{}-%(title)s.%(ext)s'.format(video_path), 
         'quiet': True, 
         #'verbose': True,
         'retries': 3, 
         'ignoreerrors': True, 
         'age_limit': 28,
-        'logger': logging.getLogger("vkd")}
+    }
     if proxy_url:
         ydl_opts['proxy'] = proxy_url # Добавляем прокси если он указан
 
@@ -723,8 +723,8 @@ async def download_videos(videos_path: Path, videos: list, cli_args):
 
     futures = []
     for i, video in enumerate(videos, start=1):
-        filename = "{}_{}_{}.mp4".format(video["date"], video["owner_id"], video["id"])
-        video_path = videos_path.joinpath(filename)
+        filename = "{}_{}_{}".format(video["date"], video["owner_id"], video["id"])
+        video_path = videos_path.joinpath(filename).resolve()
         if video_path.exists():
             logger.info(f"Пропущено (уже существует): {video_path.name}")
             continue
