@@ -28,6 +28,8 @@ def get_hash(filename: Path, first_chunk_only=False, hash=hashlib.sha1):
 
 
 def check_for_duplicates(path: Path) -> int:
+    if not path: # на всякий случай
+        return 0
     hashes_by_size = defaultdict(list)  # dict of size_in_bytes: [full_path_to_file1, full_path_to_file2, ]
     hashes_on_1k = defaultdict(list)  # dict of (hash1k, size_in_bytes): [full_path_to_file1, full_path_to_file2, ]
     hashes_full = {}   # dict of full_file_hash: full_path_to_file_string
