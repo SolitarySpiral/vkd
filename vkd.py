@@ -64,14 +64,15 @@ class Vkd:
         logger.debug("Vkd init — сессия создана")
         self.vk = self.session.vk
 
-        self.groups = Groups(self.vk)
+        self.video = Video(self.vk)
+        logger.debug("Vkd init — Video создан")
+        self.groups = Groups(self.vk, self.video)
         logger.debug("Vkd init — groups создан")
         self.wall = Wall(self.vk, self.groups)
         logger.debug("Vkd init — Wall создан")
         self.photos = Photos(self.vk)
         logger.debug("Vkd init — Photos создан")
-        self.video = Video(self.vk)
-        logger.debug("Vkd init — Video создан")
+        
         self.messages = Messages(self.vk)
         logger.debug("Vkd init — Messages создан")
         self.cli_args = args_from_cli
@@ -124,7 +125,13 @@ class Vkd:
                         logger.info(f"Пытаемся получить все альбомы группы: собрали фотографий {len(items)}")
                         all_photos.extend(self.utils.extract_from_raw_data(type='photos', raw_data=items, owner_id=group))
                     if d_videos:
-                        logger.info(f"Пытаемся получить все видео группы: {group}")
+                        # ВИДЕО ШОРТЫ НЕ РАБОТАЮТ В КОНТАКТЕ, ИХ АПИ НЕ ГОТОВО, ОБХОДНОЙ ПУТЬ БАГНУТЫЙ
+                        # logger.info(f"Пытаемся получить все видео группы: {group}")
+                        # logger.info(f"Пытаемся получить видео шорты со стены")
+                        # items = self.wall.vk_get_posts(group_id=group, only_videos=True)
+                        # all_videos.extend(self.utils.extract_from_raw_data(type='videos', raw_data=items, owner_id=group))
+                        # logger.info(f"Пытаемся получить видео шорты со стены: собрали {len(items)}")
+
                         items = self.video.vk_video_get(group)
                         logger.info(f"Пытаемся получить все видео группы: собрали {len(items)}")
                         all_videos.extend(self.utils.extract_from_raw_data(type='videos', raw_data=items, owner_id=group))
@@ -220,11 +227,47 @@ class VkSession:
         vk_session = vk_api.VkApi(token=token)
         self.vk = vk_session.get_api()
         logger.info("Успешно авторизовались")
-          
-class Groups:
-    'Вспомогательный класс Groups используется в связке Wall для получения фото постов стены'
+
+class Video:
+    '''Основной класс для получения видео через апи.'''
     def __init__(self, vk):
         self.vk = vk
+
+    def vk_video_get(self, owner_id) -> dict:
+        offset = 0
+        all_videos = []
+        while True:
+            response = self.vk.video.get(
+                owner_id=owner_id,
+                count=100,
+                offset=offset
+            )
+            count = response["count"]
+            temp = response["items"]
+            logger.info(f"Сбор видео: длина items {len(temp)}")
+            logger.info(f"Сбор видео: Ожидаем{count} получено {len(all_videos)}")
+            all_videos.extend(temp)
+
+            if len(temp) < 100:
+                if len(temp)==99 and offset==0:
+                    offset+=99
+                    continue
+                break
+            offset += 100
+        return all_videos
+    
+    def vk_getVideoByid(self, owner_id, video_id) -> dict:
+        logger.info(f"Получаем видео по id {video_id}")
+        return self.vk.video.get(
+            owner_id=owner_id,
+            videos = video_id
+        )["items"]
+
+class Groups:
+    'Вспомогательный класс Groups используется в связке Wall для получения фото постов стены'
+    def __init__(self, vk, video_class: Video):
+        self.vk = vk
+        self.videos = video_class
 
     def get_single_post(self, post: dict):
         """Проходимся по всем вложениям поста и отбираем только картинки"""
@@ -248,6 +291,28 @@ class Groups:
             raise(e)
         
         return post_items
+    
+    def get_single_post_video(self, post:dict):
+        """Проходимся по всем вложениям поста и отбираем только видео-шорты"""
+        post_items = []
+        attachments = post.get("attachments")
+        try:
+            for attachment in attachments:
+                if attachment.get("type") == "video":
+                    #if attachment.get("video").get("type") == "short_video":
+                        #print(attachment.get("video").get("type"))
+                        id = attachment.get("video").get("id")
+                        owner_id = attachment.get("video").get("owner_id")
+                        video_id = f'{owner_id}_{id}'
+                        #print(video_id)
+                        video_item = self.videos.vk_getVideoByid(owner_id, video_id)
+                        post_items.extend(video_item)
+                    #else:
+                        #logger.info("Вложение с обычным видео, не short")
+        except Exception as e:
+            logger.error(e)
+        
+        return post_items
             
 class Wall:
     'Вспомогательный класс Wall, использующий апи вконтакте wall.get для получения постов. Зависим от Groups'
@@ -257,7 +322,7 @@ class Wall:
         self.group_id = group_id
 
 
-    def vk_get_posts(self, group_id):
+    def vk_get_posts(self, group_id, only_videos=None):
         'Получаем со стены по 100 постов за проход и проверяем вложения, возвращаем обработанный список wall_items с фото, готовый к загрузке'
         wall_items = []
         offset = 0
@@ -268,24 +333,44 @@ class Wall:
                 offset=offset
             )["items"]
             for post in posts:
+                try:
+                    # Пропускаем посты с рекламой
+                    if post["marked_as_ads"]:
+                        logger.info("Игнорируем пост с рекламой")
+                        continue
 
-                # Пропускаем посты с рекламой
-                if post["marked_as_ads"]:
-                    continue
+                    attachments = post.get("attachments", [])
+                    if not attachments:
+                        logger.info("Пропущен пост без вложений")
+                        continue  # или continue, в зависимости от контекста
 
-                # Если пост скопирован с другой группы
-                if "copy_history" in post:
-                    if "attachments" in post["copy_history"][0]:
-                        wall_items.extend(self.groups.get_single_post(post["copy_history"][0]))
+                    # Если пост скопирован с другой группы
+                    if "copy_history" in post:
+                        logger.info("Пост с другой группы, проверяем вложения")
+                        if not only_videos:
+                            if "attachments" in post["copy_history"][0]:
+                                wall_items.extend(self.groups.get_single_post(post["copy_history"][0]))
 
-                elif "attachments" in post:
-                    wall_items.extend(self.groups.get_single_post(post))
+                    if attachments:
+                        if only_videos:
+                            try:
+                                for attachment in attachments:
+                                    if attachment.get("type") == "video":
+                                        logger.debug(f"пробуем достать видео из поста.")
+                                        wall_items.extend(self.groups.get_single_post_video(post)) #возвращает видео-айди из постов
+                            except Exception as e:
+                                logger.error("Ошибка парсинга поста", post, e)
+                        else:
+                            wall_items.extend(self.groups.get_single_post(post))
+                except Exception as e:
+                    logger.error("Иная ошибка парсинга поста", post, e)
 
-            logger.info(f"Собрали со стены фотографий: {len(wall_items)}")
+            logger.info(f"Собрали со стены медиафайлов: {len(wall_items)}")
             if len(posts) < 100:
                 break
             offset += 100
-        
+
+        logger.info("Закончили парсить посты стены")
         return wall_items
 
 class Photos:
@@ -341,27 +426,7 @@ class Photos:
             logger.error(f"Ошибка при получении альбомов: {e}")
             return {}
 
-class Video:
-    '''Основной класс для получения видео через апи.'''
-    def __init__(self, vk):
-        self.vk = vk
 
-    def vk_video_get(self, owner_id) -> dict:
-        offset = 0
-        all_videos = []
-        while True:
-            temp = self.vk.video.get(
-                owner_id=owner_id,
-                count=100,
-                offset=offset
-            )["items"]
-
-            all_videos.extend(temp)
-
-            if len(temp) < 100:
-                break
-            offset += 100
-        return all_videos
     
 class Messages:
     'Основной класс для апи vk.messages'
@@ -687,7 +752,7 @@ async def download_photos(utils_instance:Utils, photos_path: Path, photos: list)
 async def download_video(video_path:Path, video_link, proxy_url=None):
 
     ydl_opts = {
-        'outtmpl': '{}-%(title)s.%(ext)s'.format(video_path), 
+        'outtmpl': '{}'.format(video_path), 
         'quiet': True, 
         #'verbose': True,
         'retries': 3, 
@@ -723,10 +788,13 @@ async def download_videos(videos_path: Path, videos: list, cli_args):
 
     futures = []
     for i, video in enumerate(videos, start=1):
-        filename = "{}_{}_{}".format(video["date"], video["owner_id"], video["id"])
+        filename = "{}_{}_{}.mp4".format(video["date"], video["owner_id"], video["id"])
         video_path = videos_path.joinpath(filename).resolve()
+        if not video_path:
+            logger.error("Не может быть создан путь для видео", video_path)
+            continue
         if video_path.exists():
-            logger.info(f"Пропущено (уже существует): {video_path.name}")
+            logger.debug(f"Пропущено (уже существует): {video_path.name}")
             continue
         futures.append(download_video(video_path, video["player"], proxy_str))
     logger.info("Мы попробуем скачать %s видео" % len(futures))
