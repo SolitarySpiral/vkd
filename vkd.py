@@ -19,6 +19,7 @@ from datetime import datetime
 
 from filter import check_for_duplicates
 from proxy import construct_proxy_string
+from vk_audio_decryptor import Audio
 
 logging.basicConfig(
     level=logging.INFO,
@@ -60,30 +61,37 @@ class Vkd:
         logger.debug("Vkd init — загружен логгер")
         token = load_token_from_config()
         logger.debug(f"Vkd init — токен загружен: {token}")
+
         self.session = VkSession(token)
         logger.debug("Vkd init — сессия создана")
         self.vk = self.session.vk
 
         self.video = Video(self.vk)
         logger.debug("Vkd init — Video создан")
+
         self.groups = Groups(self.vk, self.video)
         logger.debug("Vkd init — groups создан")
+
         self.wall = Wall(self.vk, self.groups)
         logger.debug("Vkd init — Wall создан")
+
         self.photos = Photos(self.vk)
-        logger.debug("Vkd init — Photos создан")
-        
+        logger.debug("Vkd init — Photos создан")   
+
         self.messages = Messages(self.vk)
         logger.debug("Vkd init — Messages создан")
+
         self.cli_args = args_from_cli
         self.utils = Utils(self.vk, self.photos, self.cli_args)
         logger.debug("Vkd init — utils создан")
         self.vk_ids, self.ids_type = self.utils.vk_resolve_ids(vk_ids)
         logger.info(f"Vkd init — ids разрешены:{self.vk_ids} с типом {self.ids_type}")
-        
+
+        self.audio = Audio(token=token, owner_id=self.vk_ids, download_dir=BASE_DIR or None)
+        logger.debug("Vkd init — Audio создан")
         #self.dir_name: Path = ''
 
-    async def main(self, d_photos = None, d_videos = None, d_wall = None, d_chat = None):
+    async def main(self, d_photos = None, d_videos = None, d_wall = None, d_chat = None, d_audio = None):
         """
         Основной модуль, принимающий CLI аргументы. Определяет тип аргумента target_id. Скачивает фото/видео в зависимости от параметров
         d_photos, d_videos, d_wall, d_chat
@@ -108,6 +116,10 @@ class Vkd:
 
         logger.info("Приступаем к получению данных")
         # основная логика
+        if d_audio:
+            await self.audio.main()
+            
+
         if type == 'group': 
             if self.utils.check_group_ids(self.vk_ids):
                 for group in self.vk_ids:
@@ -425,9 +437,7 @@ class Photos:
         except Exception as e:
             logger.error(f"Ошибка при получении альбомов: {e}")
             return {}
-
-
-    
+  
 class Messages:
     'Основной класс для апи vk.messages'
     def __init__(self, vk):
@@ -771,7 +781,6 @@ async def download_video(video_path:Path, video_link, proxy_url=None):
     except Exception as e:
         logger.error(f"Неожиданная ошибка при загрузке видео {video_link} в {video_path}: {e}")
 
-
 async def download_videos(videos_path: Path, videos: list, cli_args):
     proxy_str = None
     if cli_args.use_proxy:
@@ -824,32 +833,36 @@ if __name__ == '__main__':
                             help="Путь к папке для сохранения файлов (по умолчанию: D:/ghd/Фотки)") # Вы можете установить здесь путь по умолчанию, например, 'VK_Downloads'
 
         # 3. Флаги (boolean arguments) для указания типа контента
-        parser.add_argument("--photos",
+        parser.add_argument("-p","--photos",
                             action="store_true", # Значение будет True, если флаг указан, иначе False
                             help="Скачивать фотографии (альбомы, сохраненные и т.д., в зависимости от типа vk_ids).")
 
-        parser.add_argument("--videos",
+        parser.add_argument("-v","--videos",
                             action="store_true",
                             help="Скачивать видеозаписи (в зависимости от типа vk_ids).")
 
-        parser.add_argument("--chat",
+        parser.add_argument("-c","--chat",
                             action="store_true",
                             help="Скачивать фотографии из указанного чата/переписки (если vk_ids это ID чата или ссылка на беседу).")
         
-        parser.add_argument("--wall",
+        parser.add_argument("-w","--wall",
                             action="store_true",
                             help="Скачивать со стены (если vk_ids это ID пользователя или ID группы).")
         
-        parser.add_argument("--use-proxy",
+        parser.add_argument("-u","--use-proxy",
                             action="store_true",
                             help="Использовать прокси для скачивания видео")
+        
+        parser.add_argument("-a","--audio",
+                            action="store_true",
+                            help="Скачать аудиозаписи (в зависимости от типа vk_ids).")
 
         # Парсинг аргументов
         args = parser.parse_args()
 
         BASE_DIR = Path(args.output_dir)
 
-        if not args.photos and not args.videos and not args.chat and not args.wall:
+        if not args.photos and not args.videos and not args.chat and not args.wall and not args.audio:
             parser.print_help()
             sys.exit("Не выбран тип контента для скачивания.")
 
@@ -863,7 +876,8 @@ if __name__ == '__main__':
             d_photos=args.photos,
             d_videos=args.videos,
             d_wall=args.wall,
-            d_chat=args.chat,         
+            d_chat=args.chat,
+            d_audio=args.audio         
         ))
     except Exception as e:
         logger.error(f"ОШИБКА: {e}")
